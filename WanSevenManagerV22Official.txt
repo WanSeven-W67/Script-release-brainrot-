@@ -1,0 +1,534 @@
+-- [[ WANSEVEN MANAGER V22 - W7 UI LIBRARY INTEGRATION & PART GAIB SENSOR ENGINE ]]
+-- FORMAT: TEXT RAW FOR EXECUTOR (.TXT)
+-- VERSION: 22.0 (AUTOMATIC PAUSE PIJAKAN GAIB & CONTINUOUS VELOCITY LOCK ENGINE)
+-- SUMBU FISIKA FIX: Y ADALAH KETINGGIAN VERTIKAL, X & Z HORIZONTAL
+-- JALUR TIKUS UTAMA: X: 75, Y: 80
+-- TRANSIT FOTO 1 (CLAIM ZONE): X: -108.4, Y: 58.9, Z: -91.3
+-- RUMAH FOTO 2 (FINAL LANDING): X: -104, Y: 58.9, Z: 3.6
+
+-- INITIALIZATION & INJECTION OF W7 PREMIUM UI LIBRARY
+local W7Lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/WanSeven-W67/great-script/refs/heads/main/W7Lib_With_Shortcuts4"))()
+local Window = W7Lib:CreateWindow("W7 Premium | WanSeven Manager V22")
+
+Window:SetTheme({
+    AccentColor = Color3.fromRGB(0, 180, 255),
+    PanelColor = Color3.fromRGB(24, 24, 32)
+})
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+
+-- SINKRONISASI REMOTE SERVER GAME SERVICES
+local KnitGameRF = nil
+pcall(function()
+    local Packages = ReplicatedStorage:WaitForChild("Packages", 10)
+    if Packages then
+        local _Index = Packages:WaitForChild("_Index", 10)
+        local KnitFolder = _Index:GetChildren()[2]
+        if KnitFolder and KnitFolder:FindFirstChild("knit") then
+            KnitGameRF = KnitFolder.knit.Services.Game.RF
+        end
+    end
+end)
+
+-- VARIABEL GLOBAL KONFIGURASI DAN STATE MANAGEMENT
+_G.AutoDropActive = false
+_G.AutoClaimActive = false
+_G.AutoSweeperActive = false
+_G.FloatActive = false
+_G.GodmodeActive = false
+_G.InstantPromptActive = true
+_G.TweenSpeed = 250
+_G.IsTweening = false -- SENSOR AUTOMATIC UNTUK PAUSE PART GAIB
+
+local floatPart = nil
+local lockedY = nil
+local isHoldingUp = false
+local isHoldingDown = false
+local currentCoordText = "📌 X: 0 | Y: 0 | Z: 0"
+
+local COORDS = {
+    Cosmic1 = Vector3.new(-112.98, 58.94, -2857.19),
+    Cosmic2 = Vector3.new(-110.35, 58.94, -4103.20),
+    Cosmic3 = Vector3.new(-102.42, 60.55, -4104.73),
+    Cosmic4 = Vector3.new(-113.13, 59.81, -5741.02),
+    Secret  = Vector3.new(-92.07, 59.81, -7869.52),
+    Surgawi = Vector3.new(-56.50, 59.81, -9919.44)
+}
+
+-- CAMERA NOCLIP FORCE LOCK & FULL BODY CHARACTER NOCLIP
+pcall(function()
+    player.CameraMaxZoomDistance = 5000
+    player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+end)
+
+RunService.Heartbeat:Connect(function()
+    pcall(function()
+        if player.DevCameraOcclusionMode ~= Enum.DevCameraOcclusionMode.Invisicam then
+            player.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
+        end
+        local char = player.Character
+        if char and char:Parent() then
+            for _, part in pairs(char:GetChildren()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                    if part.Name == "HumanoidRootPart" then 
+                        part.RotVelocity = Vector3.new(0, 0, 0) 
+                    end
+                end
+            end
+        end
+    end)
+end)
+
+-- INTERAKSI TOMBOL KILAT PERMANEN 0 DETIK
+task.spawn(function()
+    while true do
+        if _G.InstantPromptActive then
+            pcall(function()
+                for _, prompt in pairs(workspace:GetDescendants()) do
+                    if prompt:IsA("ProximityPrompt") then prompt.HoldDuration = 0 end
+                end
+            end)
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- AMAN DATA CONSTRAINTS CLEANSING
+local function cleanOldConstraints(hrp)
+    if not hrp then return end
+    for _, child in pairs(hrp:GetChildren()) do
+        if child:IsA("BodyVelocity") or child:IsA("BodyGyro") then
+            child:Destroy()
+        end
+    end
+end
+
+local function getFreshRoot()
+    local char = player.Character
+    if not char then return nil end
+    for _, part in pairs(char:GetChildren()) do
+        if part:IsA("BasePart") then part.Anchored = false end
+    end
+    return char:FindFirstChild("HumanoidRootPart")
+end
+
+-- TWEEN MANAGER DENGAN METODE EXCLUSIVE TIMEOUT OVERRIDE & INSTANT TARGET FRAME LOCK
+local function safeTween(hrp, targetCFrame, duration)
+    if not hrp then return end
+    local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
+    local completed = false
+    
+    local connection
+    connection = tween.Completed:Connect(function()
+        completed = true
+        if connection then connection:Disconnect() end
+    end)
+    
+    tween:Play()
+    
+    local startTime = tick()
+    while not completed and (tick() - startTime) < 5 do
+        if not hrp or not hrp.Parent then break end
+        task.wait()
+    end
+    
+    if not completed and tween then
+        tween:Cancel()
+        tween:Destroy()
+    end
+    
+    if hrp and hrp.Parent then
+        hrp.CFrame = targetCFrame
+    end
+end
+
+-- NAVIGASI PULAU REGULER DENGAN CONTINUOUS VELOCITY LOCK ENGINE (ANTI-ANJLOK)
+local function tweenTo(targetPos)
+    pcall(function()
+        _G.IsTweening = true -- SENSOR OTOMATIS: BEKUKAN PIJAKAN GAIB
+        if floatPart then floatPart.Transparency = 1 floatPart.CanCollide = false end
+        
+        local currentSpeed = tonumber(_G.TweenSpeed) or 250
+        local hrp = getFreshRoot()
+        if not hrp then _G.IsTweening = false return end
+        
+        cleanOldConstraints(hrp)
+        
+        local masterBV = Instance.new("BodyVelocity")
+        masterBV.Velocity = Vector3.new(0, 0, 0)
+        masterBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        masterBV.Parent = hrp
+        
+        -- TAHAP 1: Masuk Jalur Tikus (X: 75, Y: 80)
+        local stage1Pos = Vector3.new(75, 80, hrp.Position.Z)
+        safeTween(hrp, CFrame.new(stage1Pos), (hrp.Position - stage1Pos).Magnitude / currentSpeed)
+        
+        hrp = getFreshRoot()
+        if not hrp then if masterBV then masterBV:Destroy() end _G.IsTweening = false return end
+        masterBV.Parent = hrp
+        
+        -- TAHAP 2: Meluncur Sepanjang Sumbu Z Terowongan Dinding
+        local stage2Pos = Vector3.new(75, 80, targetPos.Z)
+        safeTween(hrp, CFrame.new(stage2Pos), math.abs(hrp.Position.Z - targetPos.Z) / currentSpeed)
+        
+        hrp = getFreshRoot()
+        if not hrp then if masterBV then masterBV:Destroy() end _G.IsTweening = false return end
+        masterBV.Parent = hrp
+        
+        -- TAHAP 3: Keluar Dinding Mendarat Presisi Ke Target Pulau Asli
+        local tweenEnd = TweenService:Create(hrp, TweenInfo.new((hrp.Position - targetPos).Magnitude / currentSpeed, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = CFrame.new(targetPos)})
+        tweenEnd:Play()
+        tweenEnd.Completed:Wait()
+        
+        if masterBV then masterBV:Destroy() end
+        
+        -- SINKRONISASI ULANG KETINGGIAN PASCA TWEEN SELESAI
+        if _G.FloatActive and hrp then
+            lockedY = hrp.Position.Y - 3.5
+            if floatPart then
+                floatPart.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
+                floatPart.Transparency = 0.5
+                floatPart.CanCollide = true
+            end
+        end
+        _G.IsTweening = false -- SENSOR OTOMATIS: AKTIFKAN KEMBALI PIJAKAN GAIB
+    end)
+end
+
+-- MODUL LINTASAN PULANG PINTAR: TUNNEL-TO-PHOTO DESIGN DENGAN CONTINUOUS VELOCITY LOCK ENGINE
+local function tweenToHomeWithSmartClaim(homePos)
+    pcall(function()
+        _G.IsTweening = true -- SENSOR OTOMATIS: BEKUKAN PIJAKAN GAIB
+        if floatPart then floatPart.Transparency = 1 floatPart.CanCollide = false end
+        
+        local currentSpeed = tonumber(_G.TweenSpeed) or 250
+        local hrp = getFreshRoot()
+        if not hrp then _G.IsTweening = false return end
+        
+        cleanOldConstraints(hrp)
+        
+        local masterBV = Instance.new("BodyVelocity")
+        masterBV.Velocity = Vector3.new(0, 0, 0)
+        masterBV.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        masterBV.Parent = hrp
+        
+        -- TAHAP 1: Tarik Karakter Horizontal Masuk ke Jalur Tikus (X: 75, Y: 80)
+        local tunnelStart = Vector3.new(75, 80, hrp.Position.Z)
+        safeTween(hrp, CFrame.new(tunnelStart), (hrp.Position - tunnelStart).Magnitude / currentSpeed)
+        
+        hrp = getFreshRoot()
+        if not hrp then if masterBV then masterBV:Destroy() end _G.IsTweening = false return end
+        masterBV.Parent = hrp
+        
+        -- TAHAP 2: Meluncur Lurus Di Dalam Dinding Mengikuti Sumbu Z Titik Foto 1
+        local tunnelAlignZ = Vector3.new(75, 80, -91.3)
+        safeTween(hrp, CFrame.new(tunnelAlignZ), math.abs(hrp.Position.Z - (-91.3)) / currentSpeed)
+        
+        hrp = getFreshRoot()
+        if not hrp then if masterBV then masterBV:Destroy() end _G.IsTweening = false return end
+        masterBV.Parent = hrp
+        
+        -- TAHAP 3: Belok Patah Keluar Menuju Titik Transit Foto 1 Depan Zona Claim
+        local photo1Pos = Vector3.new(-108.4, 58.9, -91.3)
+        safeTween(hrp, CFrame.new(photo1Pos), (hrp.Position - photo1Pos).Magnitude / currentSpeed)
+        
+        -- TAHAP 4: Jeda Diam Penyerapan Claim Poin Backpack
+        task.wait(0.2)
+        
+        hrp = getFreshRoot()
+        if not hrp then if masterBV then masterBV:Destroy() end _G.IsTweening = false return end
+        masterBV.Parent = hrp
+        
+        -- TAHAP 5: Meluncur Lurus Keluar Menuju Koordinat Foto 2 Rumah Akhir
+        local tweenEnd = TweenService:Create(hrp, TweenInfo.new((hrp.Position - homePos).Magnitude / currentSpeed, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = CFrame.new(homePos)})
+        tweenEnd:Play()
+        tweenEnd.Completed:Wait()
+        
+        if masterBV then masterBV:Destroy() end
+        
+        -- SINKRONISASI ULANG KETINGGIAN PASCA PULANG RUMAH
+        if _G.FloatActive and hrp then
+            lockedY = hrp.Position.Y - 3.5
+            if floatPart then
+                floatPart.CFrame = CFrame.new(hrp.Position.X, lockedY, hrp.Position.Z)
+                floatPart.Transparency = 0.5
+                floatPart.CanCollide = true
+            end
+        end
+        _G.IsTweening = false -- SENSOR OTOMATIS: AKTIFKAN KEMBALI PIJAKAN GAIB
+    end)
+end
+
+-- CREATING 3 TABS HIERARCHY ACCORDING TO W7 UI SPECIFICATION
+local Tab1 = Window:CreateTab("🚀 LINTAS")
+local Tab2 = Window:CreateTab("⚙️ PANEN")
+local Tab3 = Window:CreateTab("🛡️ EXTRA")
+
+-- ====================================================================
+-- TAB 1 ELEMENTS: NAVIGATION & INDEPENDENT VERTICAL CONTROLLER WIDGET
+-- ====================================================================
+
+Tab1:CreateButton("🌌 Meluncur Ke Cosmic 1", function() tweenTo(COORDS.Cosmic1) end)
+Tab1:CreateButton("🌌 Meluncur Ke Cosmic 2", function() tweenTo(COORDS.Cosmic2) end)
+Tab1:CreateButton("🌌 Meluncur Ke Cosmic 3", function() tweenTo(COORDS.Cosmic3) end)
+Tab1:CreateButton("🌌 Meluncur Ke Cosmic 4", function() tweenTo(COORDS.Cosmic4) end)
+Tab1:CreateButton("🤫 Menyusup Ke Secret Island", function() tweenTo(COORDS.Secret) end)
+Tab1:CreateButton("✨ Mengangkasa Ke Pulau Surgawi", function() tweenTo(COORDS.Surgawi) end)
+
+Tab1:CreateButton("🏠 Kembali Ke Rumahku", function()
+    tweenToHomeWithSmartClaim(Vector3.new(-104, 58.9, 3.6))
+end)
+
+-- ASSEMBLEY PIJAKAN KAKI GAIB DENGAN WIDGET MINI SUB-CONTROLLER MANAJEMEN INDEPENDEN VIA TOGGLE EXTENSION
+local CoreGui = game:GetService("CoreGui")
+local FloatWidgetFrame = CoreGui:FindFirstChild("W7_FloatWidget", true)
+
+if not FloatWidgetFrame then
+    local FrameWidget = Instance.new("Frame")
+    FrameWidget.Name = "W7_FloatWidget"
+    FrameWidget.Size = UDim2.new(0, 95, 0, 160)
+    FrameWidget.Position = UDim2.new(0.5, 230, 0.4, -80)
+    FrameWidget.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
+    FrameWidget.BorderSizePixel = 0
+    FrameWidget.Active = true
+    FrameWidget.Draggable = true
+    FrameWidget.Visible = false
+    
+    local ScreenWidget = CoreGui:FindFirstChild("WanSevenManager_V22_Widget") or Instance.new("ScreenGui")
+    ScreenWidget.Name = "WanSevenManager_V22_Widget"
+    ScreenWidget.ResetOnSpawn = false
+    ScreenWidget.Parent = CoreGui
+    FrameWidget.Parent = ScreenWidget
+    
+    Instance.new("UICorner", FrameWidget).CornerRadius = UDim.new(0, 10)
+    local StrokeW = Instance.new("UIStroke") StrokeW.Thickness = 2; StrokeW.Color = Color3.fromRGB(0, 180, 255); StrokeW.Parent = FrameWidget
+    
+    local Up = Instance.new("TextButton")
+    Up.Size = UDim2.new(1, -16, 0, 40); Up.Position = UDim2.new(0, 8, 0, 8); Up.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    Up.Text = "UP"; Up.TextColor3 = Color3.fromRGB(0, 255, 150); Up.Font = Enum.Font.GothamBold; Up.TextSize = 13; Up.Parent = FrameWidget
+    Instance.new("UICorner", Up).CornerRadius = UDim.new(0, 6)
+    
+    local WSInput = Instance.new("TextBox")
+    WSInput.Size = UDim2.new(1, -16, 0, 40); WSInput.Position = UDim2.new(0, 8, 0, 54); WSInput.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+    WSInput.Text = "10"; WSInput.TextColor3 = Color3.fromRGB(255, 255, 255); WSInput.Font = Enum.Font.GothamBold; WSInput.TextSize = 14; WSInput.Parent = FrameWidget
+    Instance.new("UICorner", WSInput).CornerRadius = UDim.new(0, 6)
+    
+    local Down = Instance.new("TextButton")
+    Down.Size = UDim2.new(1, -16, 0, 40); Down.Position = UDim2.new(0, 8, 0, 100); Down.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    Down.Text = "DOWN"; Down.TextColor3 = Color3.fromRGB(255, 70, 70); Down.Font = Enum.Font.GothamBold; Down.TextSize = 13; Down.Parent = FrameWidget
+    Instance.new("UICorner", Down).CornerRadius = UDim.new(0, 6)
+    
+    Up.MouseButton1Down:Connect(function() isHoldingUp = true end)
+    Up.MouseButton1Up:Connect(function() isHoldingUp = false end)
+    Up.MouseLeave:Connect(function() isHoldingUp = false end)
+    
+    Down.MouseButton1Down:Connect(function() isHoldingDown = true end)
+    Down.MouseButton1Up:Connect(function() isHoldingDown = false end)
+    Down.MouseLeave:Connect(function() isHoldingDown = false end)
+    
+    FloatWidgetFrame = FrameWidget
+end
+
+local function getWidgetFloatSpeed()
+    local widget = FloatWidgetFrame:FindFirstChildOfClass("TextBox")
+    if not widget then return 10 end
+    local parsed = tonumber(widget.Text)
+    if not parsed or parsed < 0 then widget.Text = "10" return 10 end
+    return parsed
+end
+
+Tab1:CreateButtonToggle("🧱 Pijakan Kaki Gaib", false, function(state)
+    _G.FloatActive = state
+    FloatWidgetFrame.Visible = state
+    
+    if _G.FloatActive then
+        lockedY = nil
+        pcall(function()
+            if not floatPart then
+                floatPart = Instance.new("Part")
+                floatPart.Size = Vector3.new(7, 0.6, 7)
+                floatPart.Transparency = 0.5
+                floatPart.Color = Color3.fromRGB(0, 180, 255)
+                floatPart.Material = Enum.Material.Neon
+                floatPart.Anchored = true
+                floatPart.CanCollide = true
+                floatPart.Parent = workspace
+            end
+        end)
+        
+        task.spawn(function()
+            while _G.FloatActive do
+                pcall(function()
+                    -- AUDIT FIX RESOLUTION: HANYA BERGERAK JIKA TIDAK SEDANG DALAM KONDISI TWEEN LUNCUR
+                    if not _G.IsTweening then
+                        local hrp = getFreshRoot()
+                        if hrp and floatPart then
+                            local currentPos = hrp.Position
+                            if not lockedY then lockedY = currentPos.Y - 3.5 end
+                            
+                            if isHoldingUp then
+                                local shift = getWidgetFloatSpeed() / 30
+                                lockedY = lockedY + shift
+                                hrp.CFrame = hrp.CFrame + Vector3.new(0, shift, 0)
+                            elseif isHoldingDown then
+                                local shift = getWidgetFloatSpeed() / 30
+                                lockedY = lockedY - shift
+                                hrp.CFrame = hrp.CFrame - Vector3.new(0, shift, 0)
+                            end
+                            floatPart.CFrame = CFrame.new(currentPos.X, lockedY, currentPos.Z)
+                            floatPart.Transparency = 0.5
+                            floatPart.CanCollide = true
+                        end
+                    end
+                end)
+                RunService.Heartbeat:Wait()
+            end
+            pcall(function() if floatPart then floatPart:Destroy() floatPart = nil end end)
+        end)
+    end
+end)
+
+-- ====================================================================
+-- TAB 2 ELEMENTS: HYPER AUTOMATION SEPARATE SPAM DESTRUCTIVE 1:10 RATIO
+-- ====================================================================
+
+Tab2:CreateButtonToggle("🔄 Auto Drop Rewards", false, function(state)
+    _G.AutoDropActive = state
+    if _G.AutoDropActive then
+        task.spawn(function()
+            while _G.AutoDropActive do
+                if KnitGameRF then
+                    pcall(function()
+                        for i = 1, 10 do KnitGameRF.DropRewards:InvokeServer() end
+                    end)
+                end
+                task.wait(0.1)
+            end
+        end)
+    end
+end)
+
+Tab2:CreateButtonToggle("💰 Auto Claim Rewards", false, function(state)
+    _G.AutoClaimActive = state
+    if _G.AutoClaimActive then
+        task.spawn(function()
+            while _G.AutoClaimActive do
+                if KnitGameRF then
+                    pcall(function()
+                        for i = 1, 10 do KnitGameRF.ClaimRewards:InvokeServer() end
+                    end)
+                end
+                task.wait(0.1)
+            end
+        end)
+    end
+end)
+
+Tab2:CreateButtonToggle("📈 Auto Sweeper Earnings", false, function(state)
+    _G.AutoSweeperActive = state
+    if _G.AutoSweeperActive then
+        task.spawn(function()
+            while _G.AutoSweeperActive do
+                if KnitGameRF then
+                    pcall(function()
+                        for i = 1, 100 do
+                            if not _G.AutoSweeperActive then break end
+                            KnitGameRF.ClaimEarnings:InvokeServer(tostring(i))
+                        end
+                    end)
+                end
+                task.wait(3.0)
+            end
+        end)
+    end
+end)
+
+Tab2:CreateAdaptiveSlider("Kecepatan Luncur (Tween)", 50, 1000, 250, function(value)
+    _G.TweenSpeed = value
+end)
+
+-- ====================================================================
+-- TAB 3 ELEMENTS: BYPASS TAMENG DEWA & COORDINATES CLIPBOARD INJECTION
+-- ====================================================================
+
+Tab3:CreateButtonToggle("⚡ Instant Proximity Prompt", true, function(state)
+    _G.InstantPromptActive = state
+end)
+
+Tab3:CreateButtonToggle("🛡️ Premium Godmode & Deletion", false, function(state)
+    _G.GodmodeActive = state
+    if _G.GodmodeActive then
+        task.spawn(function()
+            while _G.GodmodeActive do
+                pcall(function()
+                    local char = player.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum.MaxHealth = math.huge hum.Health = math.huge end
+                    
+                    local lavas = workspace.Map:FindFirstChild("Lavas")
+                    if lavas then for _, v in pairs(lavas:GetChildren()) do v:Destroy() end end
+                    
+                    local barriers = workspace.Map:FindFirstChild("InvisibleBarriers")
+                    if barriers then for _, v in pairs(barriers:GetChildren()) do v:Destroy() end end
+                end)
+                task.wait(0.3)
+            end
+        end)
+    else
+        pcall(function() local char = player.Character local hum = char:FindFirstChildOfClass("Humanoid") if hum then hum.MaxHealth = 100 hum.Health = 100 end end)
+    end
+end)
+
+local CoordParagraph = Tab3:CreateParagraph("Koordinat Real-Time Anda", currentCoordText)
+
+RunService.Heartbeat:Connect(function()
+    pcall(function()
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local pos = hrp.Position
+            currentCoordText = string.format("📌 COORDINATES: X: %.2f | Y: %.2f | Z: %.2f", pos.X, pos.Y, pos.Z)
+            CoordParagraph:SetText(currentCoordText) -- Dynamic refresh label via UI template method
+        end
+    end)
+end)
+
+Tab3:CreateButton("📋 Copy Coordinates (XYZ)", function()
+    pcall(function()
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local pos = hrp.Position
+            local textToCopy = string.format("%.2f, %.2f, %.2f", pos.X, pos.Y, pos.Z)
+            if setclipboard then
+                setclipboard(textToCopy)
+                Window:Notify("Sistem Salin", "Koordinat berhasil dimasukkan ke Clipboard!", 2)
+            elseif toclipboard then
+                toclipboard(textToCopy)
+                Window:Notify("Sistem Salin", "Koordinat berhasil dimasukkan ke Clipboard!", 2)
+            else
+                Window:Notify("Sistem Gagal", "Executor Anda tidak mendukung clipboard injection.", 2)
+            end
+        end
+    end)
+end)
+
+Tab3:CreateButton("Tutup Menu GUI", function()
+    pcall(function()
+        _G.FloatActive = false
+        _G.AutoDropActive = false
+        _G.AutoClaimActive = false
+        _G.AutoSweeperActive = false
+        if floatPart then floatPart:Destroy() end
+        local w1 = CoreGui:FindFirstChild("WanSevenManager_V22_Widget") if w1 then w1:Destroy() end
+        Window:DestroyGUI()
+    end)
+end)
+
+Window:Notify("Sistem Berhasil", "Script WanSeven V22 Premium siap digunakan!", 4)
